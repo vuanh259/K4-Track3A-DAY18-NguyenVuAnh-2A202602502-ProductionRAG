@@ -21,7 +21,58 @@ Xem **ASSIGNMENT.md** để biết chi tiết từng module và timeline.
 |-----------|-----------|----------|
 | Docker (Qdrant) | ✅ Có | M2 Dense Search |
 | Python 3.11+ | ✅ Có | Tất cả modules (RAGAS cần 3.11+ cho asyncio) |
-| `OPENAI_API_KEY` | ⚠️ M4+M5 | RAGAS eval (M4), Enrichment LLM (M5) |
+| `GEMINI_API_KEY` | ⚠️ M4+M5 | Gemini generation, enrichment and RAGAS evaluation |
+| `OPENAI_API_KEY` | Optional | Fallback provider when no Gemini key is configured |
+| Ollama | Optional | Offline local generation, enrichment and RAGAS |
+
+Gemini is preferred when both keys are set. Configure `GEMINI_MODEL` and
+`GEMINI_EMBEDDING_MODEL` in `.env` only if you need to override the defaults.
+Never commit `.env` or paste API keys into source code.
+Gemini calls are throttled by `GEMINI_MIN_REQUEST_INTERVAL_SECONDS` (default 13s)
+to stay below the observed requests-per-minute limit; this cannot bypass daily
+quotas. The configured free-tier Gemini project reports a limit of 20 generation
+requests per day per model. M5 alone uses 110 requests, before baseline,
+production answers, and RAGAS, so a billing-enabled project or a quota increase
+is needed to finish the full run in one day. Successful M5 chunks are checkpointed
+in `.cache/enrichment.json` and can be resumed after quota becomes available.
+
+To run without API quotas, install Ollama and pull the configured local models:
+```powershell
+ollama pull qwen2.5:3b-instruct
+ollama pull nomic-embed-text
+$env:LLM_PROVIDER = "ollama"
+python main.py
+```
+Ollama runs generation and RAGAS embeddings locally; the Gemini key is not used
+when `LLM_PROVIDER=ollama`. Set `OLLAMA_MODEL`, `OLLAMA_EMBEDDING_MODEL`, or
+`OLLAMA_BASE_URL` to override the defaults. M5 cache entries are isolated by
+provider and model, so Gemini results are not reused for local runs. Local RAGAS
+scores are measurements from the configured Ollama evaluator and should not be
+treated as directly interchangeable with scores from Gemini or OpenAI.
+
+The local evaluator keeps every non-empty answer sentence, including Vietnamese
+bullet lists and sentences without a final period. This corrects RAGAS 0.1's
+period-only sentence filter; claim extraction and entailment scoring still run
+through RAGAS and the local LLM. A small local judge can disagree with a human
+review, so inspect the answer/context evidence in the failure analysis.
+
+On Windows, use the project interpreter to reproduce the local run:
+```powershell
+$env:LLM_PROVIDER = "ollama"
+.\.venv\Scripts\python.exe main.py
+$env:LLM_PROVIDER = "auto"  # unit tests mock credentials/providers
+.\.venv\Scripts\python.exe check_lab.py
+```
+
+`check_lab.py` exits nonzero for missing/incomplete evaluations, invalid scores,
+missing deliverables, remaining TODO markers, or any failing/erroring test.
+Tests alone do not establish that a live RAGAS evaluation completed.
+
+RAGAS stores completed question scores in `.cache/ragas/`, keyed by the exact
+question/answer/contexts/reference and evaluator configuration. Failed or
+non-finite results are not cached. A failed question gets one retry; a second
+failure keeps the run explicitly unscored. Re-running resumes valid evaluation
+checkpoints. Delete this cache only when deliberately requesting fresh scoring.
 
 **Pre-download models** (tránh timeout trong lab):
 ```bash
@@ -57,7 +108,7 @@ python -m venv .venv
 ```bash
 docker compose up -d                    # Khởi động Qdrant vector database
 pip install -r requirements.txt
-cp .env.example .env                    # Tạo file .env và điền OPENAI_API_KEY
+cp .env.example .env                    # Tạo file .env và điền GEMINI_API_KEY
 python naive_baseline.py                # Khởi tạo baseline
 ```
 
@@ -65,7 +116,7 @@ python naive_baseline.py                # Khởi tạo baseline
 ```powershell
 docker compose up -d                    # Khởi động Qdrant vector database
 pip install -r requirements.txt
-Copy-Item .env.example .env             # Tạo file .env và điền OPENAI_API_KEY
+Copy-Item .env.example .env             # Tạo file .env và điền GEMINI_API_KEY
 python naive_baseline.py                # Khởi tạo baseline
 ```
 *(Nếu dùng Windows CMD: dùng `copy .env.example .env` thay cho `Copy-Item`)*
@@ -76,6 +127,9 @@ python naive_baseline.py                # Khởi tạo baseline
 python main.py                          # Chạy Naive + Production + In bảng so sánh
 python check_lab.py                     # Script kiểm tra hợp lệ trước khi nộp (chạy được trên mọi OS)
 ```
+
+Successful production runs also write phase timings to
+`reports/latency_report.json`.
 
 ## Cấu trúc repo
 

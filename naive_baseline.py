@@ -5,7 +5,10 @@ Basic = paragraph chunking + dense-only search (không hybrid, không rerank, kh
 Đây là RAG đã học ở buổi trước — hôm nay sẽ cải thiện từng bước.
 """
 
-import sys, os, time
+import os
+import sys
+import time
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 if hasattr(sys.stderr, "reconfigure"):
@@ -13,10 +16,10 @@ if hasattr(sys.stderr, "reconfigure"):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.m1_chunking import load_documents, chunk_basic
-from src.m2_search import DenseSearch
-from src.m4_eval import load_test_set, evaluate_ragas, save_report
 from config import NAIVE_COLLECTION
+from src.m1_chunking import chunk_basic, load_documents
+from src.m2_search import DenseSearch
+from src.m4_eval import evaluate_ragas, load_test_set, save_report
 
 
 def main():
@@ -38,25 +41,41 @@ def main():
     test_set = load_test_set()
     questions, answers, all_contexts, ground_truths = [], [], [], []
 
-    from config import OPENAI_API_KEY
     llm_client = None
-    if OPENAI_API_KEY:
-        from openai import OpenAI
-        llm_client = OpenAI()
+    from src.llm import (
+        active_provider,
+        chat_model_name,
+        create_chat_client,
+        normalize_abstention,
+        wait_for_gemini_request,
+    )
+    if active_provider():
+        llm_client = create_chat_client()
 
     for i, item in enumerate(test_set):
         results = search.search(item["question"], top_k=3, collection=NAIVE_COLLECTION)
         contexts = [r.text for r in results]
 
         if llm_client and contexts:
+            from openai import APIError
+
             try:
                 context_str = "\n\n".join(contexts)
-                resp = llm_client.chat.completions.create(model="gpt-4o-mini", messages=[
+                wait_for_gemini_request()
+                request_options = (
+                    {"reasoning_effort": "none"}
+                    if active_provider() == "gemini"
+                    else {}
+                )
+                resp = llm_client.chat.completions.create(model=chat_model_name(), temperature=0, messages=[
                     {"role": "system", "content": "Trả lời CHỈ dựa trên context. Nếu không có → nói 'Không tìm thấy.'"},
                     {"role": "user", "content": f"Context:\n{context_str}\n\nCâu hỏi: {item['question']}"},
-                ])
-                answer = resp.choices[0].message.content
-            except Exception:
+                ], **request_options)
+                answer = normalize_abstention(resp.choices[0].message.content)
+            except APIError as error:
+                if active_provider() == "ollama":
+                    raise
+                print(f"  Generation failed: {type(error).__name__}: {error}", flush=True)
                 answer = contexts[0]
         else:
             answer = contexts[0] if contexts else "Không tìm thấy."
@@ -67,18 +86,26 @@ def main():
         ground_truths.append(item["ground_truth"])
         print(f"  [{i+1}/{len(test_set)}] {item['question'][:50]}...", flush=True)
 
-    results = evaluate_ragas(questions, answers, all_contexts, ground_truths)
-    print("\nBASIC BASELINE SCORES")
-    for m in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]:
-        print(f"  {m}: {results.get(m, 0):.4f}")
+    results = evaluate_ragas(questions, answers, all_contexts, ground_truths, cache_dir='.cache/ragas')
     save_report(results, [], path="reports/naive_baseline_report.json")
-    if all(results.get(m, 0) == 0 for m in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]):
-        print("\n💡 Lưu ý: Điểm baseline hiển thị 0.00 là bình thường khi chưa hoàn thiện M2 (Dense Search) và M4 (Eval).")
-        print("   Sau khi bạn implement xong các module, hãy chạy 'python main.py' để tự động cập nhật baseline thật và so sánh.")
-    print("\nDone! Now implement advanced modules and run: python main.py")
+    if results.get("evaluation_status") != "completed":
+        print(
+            "\nBaseline evaluation did not complete; see "
+            "reports/naive_baseline_report.json for the error.",
+            flush=True,
+        )
+        return results
+
+    print("\nBASIC BASELINE SCORES")
+    for metric in ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]:
+        print(f"  {metric}: {results[metric]:.4f}")
+    print("\nBaseline evaluation completed.")
+    return results
 
 
 if __name__ == "__main__":
     start = time.time()
-    main()
+    result = main()
     print(f"Total: {time.time() - start:.1f}s")
+    if result.get("evaluation_status") != "completed":
+        raise SystemExit(1)

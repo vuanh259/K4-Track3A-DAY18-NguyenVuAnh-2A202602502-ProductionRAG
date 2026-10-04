@@ -6,9 +6,10 @@ Chạy: python check_lab.py
 """
 
 import json
+import math
 import os
-import sys
 import subprocess
+import sys
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -36,6 +37,24 @@ def check_json(path: str, required_keys: list[str]) -> bool:
         if missing:
             print(f"  ❌ {path} thiếu keys: {missing}")
             return False
+        if path.endswith("report.json") and data.get("evaluation_status") != "completed":
+            print(f"  ❌ {path} — evaluation did not complete; scores are unmeasured")
+            return False
+        if path.endswith("report.json"):
+            from src.m4_eval import METRICS, load_test_set
+            rows = data.get('per_question', [])
+            expected = len(load_test_set())
+            if data.get('num_questions') != expected or len(rows) != expected:
+                print(f"  ❌ {path} — expected {expected} evaluated questions")
+                return False
+            for metric in METRICS:
+                values = [data.get('aggregate', {}).get(metric)] + [r.get(metric) for r in rows]
+                if any(not isinstance(v, (int, float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in values):
+                    print(f"  ❌ {path} — invalid {metric} scores")
+                    return False
+                if not math.isclose(values[0], sum(values[1:]) / expected, abs_tol=1e-6):
+                    print(f"  ❌ {path} — aggregate differs from question scores")
+                    return False
         print(f"  ✅ {path} — keys OK")
         return True
     except (json.JSONDecodeError, FileNotFoundError) as e:
@@ -62,17 +81,22 @@ def run_tests() -> tuple[int, int]:
         import re
         result = subprocess.run(
             [sys.executable, "-m", "pytest", "tests/", "-v", "--tb=no", "-q"],
-            capture_output=True, text=True, timeout=120, encoding="utf-8", errors="replace"
+            capture_output=True, text=True, timeout=1800, encoding="utf-8",
+            errors="replace", check=False,
         )
         lines = result.stdout.strip().split("\n")
         summary = lines[-1] if lines else ""
         m_pass = re.search(r"(\d+)\s+passed", summary)
         m_fail = re.search(r"(\d+)\s+failed", summary)
+        m_error = re.search(r"(\d+)\s+errors?", summary)
         passed = int(m_pass.group(1)) if m_pass else 0
         failed = int(m_fail.group(1)) if m_fail else 0
-        total = passed + failed
+        errors = int(m_error.group(1)) if m_error else 0
+        total = passed + failed + errors
+        if result.returncode and total == passed:
+            total += 1
         return passed, total
-    except Exception as e:
+    except (OSError, subprocess.TimeoutExpired) as e:
         print(f"  ⚠️  pytest error: {e}")
         return 0, 0
 
@@ -95,11 +119,17 @@ def validate():
             errors += 1
     else:
         errors += 1
-    check_file("reports/naive_baseline_report.json", required=False)
+    baseline_path = "reports/naive_baseline_report.json"
+    if os.path.exists(baseline_path):
+        if not check_json(baseline_path, ["aggregate", "num_questions"]):
+            errors += 1
+    else:
+        check_file(baseline_path, required=False)
 
     # 3. Analysis
     print("\n📝 Analysis:")
-    check_file("analysis/failure_analysis.md")
+    if not check_file("analysis/failure_analysis.md"):
+        errors += 1
 
     # 4. Individual reflections
     print("\n👤 Individual reflections:")
@@ -117,6 +147,7 @@ def validate():
             print(f"  ✅ {r}")
     else:
         print(f"  ⚠️  Chưa có file reflection cá nhân (đặt tại {ref_dir}/reflection_[HọTên].md hoặc analysis/reflection_[HọTên].md)")
+        errors += 1
 
     # 5. TODO count
     print("\n🔧 TODO markers:")
@@ -125,6 +156,7 @@ def validate():
         print("  ✅ Không còn TODO nào")
     else:
         print(f"  ⚠️  Còn {todo_count} TODO chưa implement")
+        errors += 1
 
     # 6. Tests
     print("\n🧪 Auto-tests:")
@@ -132,8 +164,11 @@ def validate():
     if total > 0:
         pct = passed / total * 100
         print(f"  {'✅' if pct >= 80 else '⚠️'} {passed}/{total} tests passed ({pct:.0f}%)")
+        if passed != total:
+            errors += 1
     else:
         print("  ⚠️  Không chạy được tests")
+        errors += 1
 
     # 7. Summary
     print("\n" + "=" * 50)
@@ -142,7 +177,8 @@ def validate():
     else:
         print(f"❌ Có {errors} lỗi. Sửa trước khi nộp.")
     print("=" * 50)
+    return errors == 0
 
 
 if __name__ == "__main__":
-    validate()
+    raise SystemExit(0 if validate() else 1)

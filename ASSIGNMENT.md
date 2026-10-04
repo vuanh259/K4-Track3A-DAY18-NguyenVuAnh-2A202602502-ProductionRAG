@@ -38,7 +38,7 @@ M1 Chunking → M5 Enrichment → M2 Hybrid Search → M3 Reranking → LLM Answ
 ```bash
 docker compose up -d                    # Khởi động Qdrant
 pip install -r requirements.txt
-cp .env.example .env                    # Tạo file .env và điền OPENAI_API_KEY
+cp .env.example .env                    # Tạo file .env và điền GEMINI_API_KEY
 python naive_baseline.py                # Khởi tạo baseline (sẽ cập nhật điểm thật sau khi xong M2 & M4)
 ```
 
@@ -46,7 +46,7 @@ python naive_baseline.py                # Khởi tạo baseline (sẽ cập nh�
 ```powershell
 docker compose up -d                    # Khởi động Qdrant
 pip install -r requirements.txt
-Copy-Item .env.example .env             # Tạo file .env và điền OPENAI_API_KEY (CMD: copy .env.example .env)
+Copy-Item .env.example .env             # Tạo file .env và điền GEMINI_API_KEY (CMD: copy .env.example .env)
 python naive_baseline.py                # Khởi tạo baseline (sẽ cập nhật điểm thật sau khi xong M2 & M4)
 ```
 
